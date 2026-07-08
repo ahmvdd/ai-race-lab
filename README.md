@@ -57,6 +57,16 @@ pip install -r requirements.txt
 
 ## Lancer une session
 
+Le plus simple, zéro option à retenir — lance une session et ouvre la vue en direct dans le navigateur :
+
+```bash
+python scripts/watch.py
+```
+
+Équivalent à `run_experiment.py --web --chat`, mais toutes les options de `run_experiment.py` restent utilisables par-dessus (`python scripts/watch.py --episodes 10 --grid-size 8`).
+
+Pour plus de contrôle :
+
 ```bash
 python scripts/run_experiment.py --model-a llama3.2 --model-b phi3 --episodes 6
 ```
@@ -74,6 +84,8 @@ python scripts/run_experiment.py --web --chat
 ```
 
 Ça ouvre automatiquement `http://127.0.0.1:8765` et diffuse chaque coup en direct (Server-Sent Events, aucune dépendance ajoutée). `--web-delay` (0.6s par défaut) contrôle le rythme d'affichage.
+
+Sur la grille (direct comme replay), les cases déjà visitées par chaque agent restent marquées d'un point de couleur — pratique pour voir en un coup d'œil si un agent explore systématiquement ou tourne en rond.
 
 Options principales :
 
@@ -97,11 +109,16 @@ Chaque session produit dans `logs/` :
 
 ## Rejouer une session
 
-`viewer/index.html` est une page autonome (aucun serveur, aucune dépendance) qui rejoue un `session_XXXX.jsonl` : glisser-déposer le fichier, choisir l'épisode, lecture/pause, vitesse réglable. Pratique pour revoir une session après coup sans relancer Ollama.
+Sans rien glisser — ouvre directement la dernière session (ou une précise) dans le navigateur :
 
 ```bash
-open viewer/index.html   # ou double-clic dans le Finder
+python scripts/replay.py                        # la plus récente dans logs/
+python scripts/replay.py logs/session_XXXX.jsonl
 ```
+
+Ou en glisser-déposer : `viewer/index.html` est une page autonome (aucun serveur, aucune dépendance) — ouvre-la (double-clic dans le Finder) et dépose un `session_XXXX.jsonl` dedans. Elle se souvient du dernier fichier chargé d'une fois sur l'autre (`localStorage` du navigateur).
+
+Dans les deux cas : choix de l'épisode, lecture/pause, vitesse réglable, avance/recule coup par coup.
 
 ## Analyser les résultats
 
@@ -134,16 +151,20 @@ Les tests tournent **sans Ollama** : le moteur de jeu (`ai_race/engine.py`) est 
 
 ```
 ai_race/
-├── engine.py         # logique de jeu pure (grille, règles) — zéro I/O
-├── ollama_client.py  # appel API Ollama + parsing des réponses
-├── memory.py         # résumé/mémoire injectée par agent
-├── runner.py         # orchestration épisode/session (LLM injectable)
-├── logging_utils.py  # écriture JSONL + CSV
-└── live_server.py    # serveur local (stdlib) pour --web, diffusion SSE
-scripts/run_experiment.py   # CLI
+├── engine.py          # logique de jeu pure (grille, règles) — zéro I/O
+├── ollama_client.py   # appel API Ollama + parsing des réponses
+├── memory.py          # résumé/mémoire injectée par agent
+├── runner.py          # orchestration épisode/session (LLM injectable)
+├── logging_utils.py   # écriture JSONL + CSV
+├── live_server.py     # serveur local (stdlib) pour --web, diffusion SSE
+└── replay_server.py   # serveur local pour scripts/replay.py (sert le .jsonl choisi)
+scripts/
+├── run_experiment.py  # CLI complet, toutes les options
+├── watch.py           # lance une session + vue live, zéro option
+└── replay.py          # rejoue une session dans le navigateur, sans glisser de fichier
 analysis/plot_results.py    # graphes + résumé depuis les logs
 viewer/
-├── index.html   # replay d'un session_*.jsonl, autonome (aucun serveur)
+├── index.html   # replay d'un session_*.jsonl (drag-and-drop ou servi par replay.py)
 ├── live.html    # vue temps réel, servie par live_server.py (--web)
 └── style.css    # design partagé entre les deux pages
 tests/                      # tests unitaires, sans réseau
