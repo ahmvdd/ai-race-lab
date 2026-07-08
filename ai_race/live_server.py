@@ -32,6 +32,25 @@ class _FastBindHTTPServer(ThreadingHTTPServer):
         self.server_port = port
 
 
+def start_server(handler_class, host: str, port: int) -> _FastBindHTTPServer:
+    """Démarre un serveur dans un thread daemon, en essayant quelques ports si occupé."""
+    httpd: Optional[_FastBindHTTPServer] = None
+    last_error: Optional[OSError] = None
+    for candidate_port in range(port, port + 10):
+        try:
+            httpd = _FastBindHTTPServer((host, candidate_port), handler_class)
+            break
+        except OSError as exc:
+            last_error = exc
+    if httpd is None:
+        raise last_error or OSError("Impossible de démarrer le serveur local")
+    httpd.daemon_threads = True  # les connexions ouvertes ne doivent jamais bloquer l'arrêt
+
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    return httpd
+
+
 class LiveServer:
     """Diffuse des événements JSON à tous les navigateurs connectés (SSE sur /events)."""
 
@@ -54,9 +73,7 @@ class LiveServer:
             client_queue.put(payload)
 
     def start(self) -> None:
-        """Démarre le serveur dans un thread daemon, en essayant quelques ports si occupé."""
         server = self
-        last_error: Optional[OSError] = None
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args) -> None:  # silence les logs HTTP par défaut
@@ -106,19 +123,8 @@ class LiveServer:
                 self.end_headers()
                 self.wfile.write(file_path.read_bytes())
 
-        for candidate_port in range(self.port, self.port + 10):
-            try:
-                self._httpd = _FastBindHTTPServer((self.host, candidate_port), Handler)
-                self.port = candidate_port
-                break
-            except OSError as exc:
-                last_error = exc
-        if self._httpd is None:
-            raise last_error or OSError("Impossible de démarrer le serveur local")
-        self._httpd.daemon_threads = True  # les connexions SSE ne doivent jamais bloquer l'arrêt
-
-        thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
-        thread.start()
+        self._httpd = start_server(Handler, self.host, self.port)
+        self.port = self._httpd.server_address[1]
 
     def stop(self) -> None:
         if self._httpd:

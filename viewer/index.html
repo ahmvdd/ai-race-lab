@@ -16,7 +16,7 @@
 <main class="wrap">
 
   <section id="loader" class="panel placeholder">
-    <p>Glisse un fichier <code>logs/session_XXXX.jsonl</code> ici, ou :</p>
+    <p>Glisse un fichier <code>logs/session_XXXX.jsonl</code> ici, ou :<br>(la page se souvient du dernier fichier chargé)</p>
     <button class="btn" id="pick-btn">Choisir un fichier</button>
     <input type="file" id="file-input" accept=".jsonl" style="display:none" aria-label="Choisir un fichier session JSONL">
   </section>
@@ -61,6 +61,7 @@
   "use strict";
 
   const DIRS = { haut: [0, -1], bas: [0, 1], gauche: [-1, 0], droite: [1, 0] };
+  const STORAGE_KEY = "ai-race-lab-last-session";
 
   const loader = document.getElementById("loader");
   const viewer = document.getElementById("viewer");
@@ -108,21 +109,34 @@
   loader.addEventListener("drop", (e) => { const f = e.dataTransfer.files[0]; if (f) loadFile(f); });
 
   function loadFile(file) {
-    sourceName = file.name;
     const reader = new FileReader();
     reader.onload = () => {
-      try { records = parseJSONL(reader.result); }
-      catch (err) { alert("Fichier illisible : " + err.message); return; }
-      if (!records.length) { alert("Aucun épisode trouvé dans ce fichier."); return; }
-      loader.hidden = true;
-      viewer.hidden = false;
-      sessionTitle.innerHTML =
-        sourceName + " — <span class=\"tag-a\">" + records[0].model_a +
-        "</span> vs <span class=\"tag-b\">" + records[0].model_b + "</span>";
-      populateEpisodeSelect();
-      loadEpisode(0);
+      openSession(file.name, reader.result);
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ name: file.name, text: reader.result })); }
+      catch (err) { /* stockage plein ou indisponible (navigation privée...) — tant pis, pas bloquant */ }
     };
     reader.readAsText(file);
+  }
+
+  function openSession(name, text) {
+    try { records = parseJSONL(text); }
+    catch (err) { alert("Fichier illisible : " + err.message); return; }
+    if (!records.length) { alert("Aucun épisode trouvé dans ce fichier."); return; }
+    sourceName = name;
+    loader.hidden = true;
+    viewer.hidden = false;
+    sessionTitle.innerHTML =
+      sourceName + " — <span class=\"tag-a\">" + records[0].model_a +
+      "</span> vs <span class=\"tag-b\">" + records[0].model_b + "</span>";
+    populateEpisodeSelect();
+    loadEpisode(0);
+  }
+
+  function loadLastSessionFromStorage() {
+    let saved;
+    try { saved = JSON.parse(localStorage.getItem(STORAGE_KEY)); }
+    catch (err) { return; }
+    if (saved && saved.name && saved.text) openSession(saved.name, saved.text);
   }
 
   function parseJSONL(text) {
@@ -222,6 +236,30 @@
       '" style="width:' + cs + "px;height:" + cs + "px;font-size:" + Math.floor(cs * 0.42) + 'px">' + agent + "</div>";
   }
 
+  function renderTrail() {
+    const cellsEl = document.getElementById("cells");
+    cellsEl.querySelectorAll(".trail-dot").forEach((el) => el.remove());
+    const cs = cellSize(currentRecord.grid_size);
+    const dotSize = Math.max(4, Math.floor(cs * 0.26));
+    const seen = { A: new Set(), B: new Set() };
+    for (let i = 0; i <= frameIndex; i++) {
+      const pos = frames[i].position;
+      ["A", "B"].forEach((agent) => {
+        const [x, y] = pos[agent];
+        const key = x + "," + y;
+        if (seen[agent].has(key)) return;
+        seen[agent].add(key);
+        const dot = document.createElement("div");
+        dot.className = "trail-dot " + agent.toLowerCase();
+        dot.style.width = dotSize + "px";
+        dot.style.height = dotSize + "px";
+        dot.style.left = (x * cs + (cs - dotSize) / 2) + "px";
+        dot.style.top = (y * cs + (cs - dotSize) / 2) + "px";
+        cellsEl.appendChild(dot);
+      });
+    }
+  }
+
   // ---------- rendering ----------
 
   function renderFrame() {
@@ -231,6 +269,7 @@
     const isLast = frameIndex === frames.length - 1;
     const won = isLast ? record.winner : null;
 
+    renderTrail();
     tokens.A.style.transform = "translate(" + frame.position.A[0] * cs + "px," + frame.position.A[1] * cs + "px)";
     tokens.B.style.transform = "translate(" + frame.position.B[0] * cs + "px," + frame.position.B[1] * cs + "px)";
     tokens.A.classList.toggle("mover", frame.agent === "A");
@@ -322,6 +361,19 @@
   nextBtn.addEventListener("click", () => { stopPlayback(); frameIndex = Math.min(frames.length - 1, frameIndex + 1); renderFrame(); });
   restartBtn.addEventListener("click", () => { stopPlayback(); frameIndex = 0; renderFrame(); });
   speedInput.addEventListener("change", () => { if (playing) { stopPlayback(); startPlayback(); } });
+
+  init();
+
+  async function init() {
+    try {
+      const resp = await fetch("session.jsonl");
+      if (resp.ok) {
+        openSession("session.jsonl", await resp.text());
+        return;
+      }
+    } catch (err) { /* pas de serveur derrière (ouverture directe du fichier) */ }
+    loadLastSessionFromStorage();
+  }
 })();
 </script>
 

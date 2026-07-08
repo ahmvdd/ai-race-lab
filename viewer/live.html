@@ -64,6 +64,7 @@
   let won = null;
   const results = [];
   const tokens = {};
+  const trail = { A: new Set(), B: new Set() };
 
   function setStatus(state, text) {
     statusEl.className = "pill " + state;
@@ -106,7 +107,11 @@
 
     chatlogEl.innerHTML = '<div class="heading">Messages</div><div class="empty">Aucun message pour l\'instant.</div>';
     statsEl.innerHTML = "";
+    trail.A.clear();
+    trail.B.clear();
     buildBoard();
+    markTrail("A", position.A[0], position.A[1]);
+    markTrail("B", position.B[0], position.B[1]);
   }
 
   function onMove(event) {
@@ -114,6 +119,7 @@
     position = event.position;
     mover = event.agent;
     if (event.message) appendChat(event.agent, event.message);
+    markTrail(event.agent, position[event.agent][0], position[event.agent][1]);
     updateTokens();
     renderLiveStats(event);
   }
@@ -182,6 +188,21 @@
   function tokenHtml(agent, cs) {
     return '<div class="token ' + agent.toLowerCase() + '" id="token-' + agent.toLowerCase() +
       '" style="width:' + cs + "px;height:" + cs + "px;font-size:" + Math.floor(cs * 0.42) + 'px">' + agent + "</div>";
+  }
+
+  function markTrail(agent, x, y) {
+    const key = x + "," + y;
+    if (trail[agent].has(key)) return;
+    trail[agent].add(key);
+    const cs = cellSize(episode.grid_size);
+    const size = Math.max(4, Math.floor(cs * 0.26));
+    const dot = document.createElement("div");
+    dot.className = "trail-dot " + agent.toLowerCase();
+    dot.style.width = size + "px";
+    dot.style.height = size + "px";
+    dot.style.left = (x * cs + (cs - size) / 2) + "px";
+    dot.style.top = (y * cs + (cs - size) / 2) + "px";
+    document.getElementById("cells").appendChild(dot);
   }
 
   function positionToken(agent, cs) {

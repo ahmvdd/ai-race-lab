@@ -145,12 +145,21 @@ select {
   border-bottom: 1px solid var(--border);
 }
 
+.trail-dot {
+  position: absolute;
+  border-radius: 50%;
+  z-index: 1;
+  pointer-events: none;
+}
+.trail-dot.a { background: var(--a); opacity: 0.32; }
+.trail-dot.b { background: var(--b); opacity: 0.32; }
+
 .bonus-marker {
   position: absolute;
   display: flex; align-items: center; justify-content: center;
   color: var(--accent);
   font-weight: 700;
-  z-index: 1;
+  z-index: 2;
   text-shadow: 0 0 12px var(--accent-soft);
 }
 .bonus-marker.reached { opacity: 0.25; }
@@ -160,7 +169,7 @@ select {
   display: flex; align-items: center; justify-content: center;
   font-weight: 700;
   border-radius: 5px;
-  z-index: 2;
+  z-index: 3;
   transition: transform 0.32s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .token.a { color: var(--a); background: var(--a-soft); border: 1px solid rgba(111,177,255,0.35); }
