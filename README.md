@@ -2,6 +2,45 @@
 
 Deux modèles Ollama locaux s'affrontent sur une grille NxN pour trouver un bonus caché en premier. Chaque modèle reçoit un résumé de ses parties précédentes (mémoire injectée dans le prompt) pour observer s'il adapte sa stratégie au fil des épisodes.
 
+Question de départ : un petit LLM local, sans fine-tuning, progresse-t-il juste en se relisant ? Spoiler dans la section suivante.
+
+## Ça donne quoi
+
+Extrait réel d'une session `llama3.2` vs `phi3`, grille 6x6, mémoire `conseil` :
+
+```
+Session : llama3.2 (A) vs phi3 (B) — grille 6x6, visibilité 2, 8 épisodes
+Logs : logs/session_20260707_133045.jsonl
+
+  Épisode 1: vainqueur=A (A: 7 coups / opt 3, B: 6 coups / opt 6, invalides A/B: 5/3)
+  Épisode 2: vainqueur=B (A: 56 coups / opt 9, B: 56 coups / opt 6, invalides A/B: 22/44)
+  Épisode 3: vainqueur=A (A: 16 coups / opt 8, B: 15 coups / opt 8, invalides A/B: 6/8)
+  Épisode 4: vainqueur=A (A: 3 coups / opt 1, B: 2 coups / opt 4, invalides A/B: 2/1)
+  Épisode 5: vainqueur=nul (A: 108 coups / opt 3, B: 108 coups / opt 4, invalides A/B: 46/90)
+  Épisode 6: vainqueur=A (A: 25 coups / opt 3, B: 24 coups / opt 6, invalides A/B: 15/18)
+  Épisode 7: vainqueur=A (A: 43 coups / opt 5, B: 42 coups / opt 2, invalides A/B: 23/31)
+  Épisode 8: vainqueur=B (A: 68 coups / opt 8, B: 68 coups / opt 6, invalides A/B: 27/51)
+```
+
+Verdict honnête sur cette session : pas de courbe de progression propre — le nombre d'invalides explose plutôt qu'il ne baisse (épisode 5 : 90 réponses invalides pour phi3). La mémoire en contexte aide parfois à retrouver plus vite un bonus déjà croisé, mais elle ne rend pas ces petits modèles fiables sur le format de réponse. C'est exactement pour objectiver ce genre de constat que les métriques (§ Analyser les résultats) existent.
+
+Avec `--chat`, chaque coup peut s'accompagner d'un message à l'adversaire :
+
+```
+Grille (tu es 'B', '*' = bonus si visible) :
+. . . . . .
+. A . . . .
+. . . * . .
+. . . . . .
+. . . . B .
+. . . . . .
+
+Message de ton adversaire : "Je fonce vers le nord, à toi de voir."
+Ton prochain coup ? (haut, bas, gauche ou droite)
+
+→ B répond : "haut\nTu bluffes, je le vois aussi."
+```
+
 ## Prérequis
 
 - Python 3.10+
@@ -18,6 +57,12 @@ pip install -r requirements.txt
 python scripts/run_experiment.py --model-a llama3.2 --model-b phi3 --episodes 6
 ```
 
+Pour suivre une partie en direct dans le terminal :
+
+```bash
+python scripts/run_experiment.py --watch --chat
+```
+
 Options principales :
 
 | Option | Défaut | Effet |
@@ -30,6 +75,7 @@ Options principales :
 | `--swap-start` | off | Alterne qui joue en premier à chaque épisode (contrôle du biais d'ordre). |
 | `--seed` | aléatoire | Grilles reproductibles (le bonus change à chaque épisode : seed+épisode). |
 | `--chat` | off | Chaque agent peut ajouter un message court à son coup (bluff, moquerie, négociation), relayé à l'adversaire au tour suivant. Purement cosmétique/expérimental : ça ne change pas les règles du jeu, et ça n'entraîne pas les modèles. |
+| `--watch` | off | Affiche la grille en direct dans le terminal à chaque coup joué. |
 
 Chaque session produit dans `logs/` :
 - `session_<timestamp>.jsonl` — un objet JSON complet par épisode (trails, positions, invalides, messages si `--chat`…)
