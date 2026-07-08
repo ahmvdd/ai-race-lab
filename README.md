@@ -6,6 +6,10 @@ Question de départ : un petit LLM local, sans fine-tuning, progresse-t-il juste
 
 ## Ça donne quoi
 
+Vue en direct (`--web`) d'une session `llama3.2` vs `phi3` en cours, avec `--chat` activé :
+
+![Vue en direct d'une session AI Race Lab](docs/live-view.png)
+
 Extrait réel d'une session `llama3.2` vs `phi3`, grille 6x6, mémoire `conseil` :
 
 ```
@@ -63,6 +67,14 @@ Pour suivre une partie en direct dans le terminal :
 python scripts/run_experiment.py --watch --chat
 ```
 
+Ou dans le navigateur (voir capture ci-dessus), sans rien installer de plus :
+
+```bash
+python scripts/run_experiment.py --web --chat
+```
+
+Ça ouvre automatiquement `http://127.0.0.1:8765` et diffuse chaque coup en direct (Server-Sent Events, aucune dépendance ajoutée). `--web-delay` (0.6s par défaut) contrôle le rythme d'affichage.
+
 Options principales :
 
 | Option | Défaut | Effet |
@@ -76,10 +88,20 @@ Options principales :
 | `--seed` | aléatoire | Grilles reproductibles (le bonus change à chaque épisode : seed+épisode). |
 | `--chat` | off | Chaque agent peut ajouter un message court à son coup (bluff, moquerie, négociation), relayé à l'adversaire au tour suivant. Purement cosmétique/expérimental : ça ne change pas les règles du jeu, et ça n'entraîne pas les modèles. |
 | `--watch` | off | Affiche la grille en direct dans le terminal à chaque coup joué. |
+| `--web` | off | Ouvre une page web locale (`viewer/live.html`) qui affiche la partie en temps réel — grille animée + messages `--chat`. |
+| `--web-delay` | 0.6 | Pause (s) entre deux coups affichés en mode `--web`. |
 
 Chaque session produit dans `logs/` :
 - `session_<timestamp>.jsonl` — un objet JSON complet par épisode (trails, positions, invalides, messages si `--chat`…)
 - `session_<timestamp>.csv` — le même en tableur, avec les ratios d'efficacité calculés (les messages ne sont pas dans le CSV, seulement le JSONL)
+
+## Rejouer une session
+
+`viewer/index.html` est une page autonome (aucun serveur, aucune dépendance) qui rejoue un `session_XXXX.jsonl` : glisser-déposer le fichier, choisir l'épisode, lecture/pause, vitesse réglable. Pratique pour revoir une session après coup sans relancer Ollama.
+
+```bash
+open viewer/index.html   # ou double-clic dans le Finder
+```
 
 ## Analyser les résultats
 
@@ -116,8 +138,13 @@ ai_race/
 ├── ollama_client.py  # appel API Ollama + parsing des réponses
 ├── memory.py         # résumé/mémoire injectée par agent
 ├── runner.py         # orchestration épisode/session (LLM injectable)
-└── logging_utils.py  # écriture JSONL + CSV
+├── logging_utils.py  # écriture JSONL + CSV
+└── live_server.py    # serveur local (stdlib) pour --web, diffusion SSE
 scripts/run_experiment.py   # CLI
 analysis/plot_results.py    # graphes + résumé depuis les logs
+viewer/
+├── index.html   # replay d'un session_*.jsonl, autonome (aucun serveur)
+├── live.html    # vue temps réel, servie par live_server.py (--web)
+└── style.css    # design partagé entre les deux pages
 tests/                      # tests unitaires, sans réseau
 ```

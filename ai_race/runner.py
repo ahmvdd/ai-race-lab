@@ -80,6 +80,9 @@ def _build_user_prompt(
 # (world, agent qui vient de jouer, episode_index, message envoyé par l'agent ce tour-ci)
 OnMoveFn = Callable[[GridWorld, str, int, str], None]
 
+# (world juste créé, episode_index) — appelé une fois avant le premier tour d'un épisode
+OnEpisodeStartFn = Callable[[GridWorld, int], None]
+
 
 def _fallback_move(world: GridWorld, agent: str, rng: random.Random) -> None:
     """Coup de secours aléatoire valide, pour ne pas bloquer la partie sur une réponse invalide."""
@@ -204,12 +207,15 @@ def run_episode(
     get_move_fn: Optional[GetMoveFn] = None,
     rng: Optional[random.Random] = None,
     on_move: Optional[OnMoveFn] = None,
+    on_episode_start: Optional[OnEpisodeStartFn] = None,
 ) -> Dict:
     """Joue un épisode complet et retourne l'enregistrement structuré (voir logging_utils)."""
     fn = get_move_fn or get_move
     rng = rng or random.Random()
     seed = None if cfg.seed is None else cfg.seed + episode_index
     world = GridWorld.random(cfg.grid_size, agents=("A", "B"), seed=seed)
+    if on_episode_start:
+        on_episode_start(world, episode_index)
 
     order = ["A", "B"]
     if cfg.swap_start and episode_index % 2 == 1:
@@ -236,6 +242,7 @@ def run_session(
     get_move_fn: Optional[GetMoveFn] = None,
     on_episode: Optional[Callable[[Dict], None]] = None,
     on_move: Optional[OnMoveFn] = None,
+    on_episode_start: Optional[OnEpisodeStartFn] = None,
 ) -> List[Dict]:
     """Joue cfg.episodes épisodes avec mémoire persistante entre les parties."""
     memories = {
@@ -244,7 +251,10 @@ def run_session(
     rng = random.Random(cfg.seed)
     records = []
     for i in range(cfg.episodes):
-        record = run_episode(cfg, i, memories, get_move_fn=get_move_fn, rng=rng, on_move=on_move)
+        record = run_episode(
+            cfg, i, memories, get_move_fn=get_move_fn, rng=rng,
+            on_move=on_move, on_episode_start=on_episode_start,
+        )
         records.append(record)
         if on_episode:
             on_episode(record)

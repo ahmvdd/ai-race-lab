@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Race Lab — Replay</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="brand"><span class="mark"></span><span class="name">AI Race Lab</span></div>
+  <span class="subtitle">Replay local — aucun serveur, aucune dépendance</span>
+</header>
+
+<main class="wrap">
+
+  <section id="loader" class="panel placeholder">
+    <p>Glisse un fichier <code>logs/session_XXXX.jsonl</code> ici, ou :</p>
+    <button class="btn" id="pick-btn">Choisir un fichier</button>
+    <input type="file" id="file-input" accept=".jsonl" style="display:none" aria-label="Choisir un fichier session JSONL">
+  </section>
+
+  <section id="viewer" hidden>
+    <div class="meta-row" id="meta-row">
+      <span id="session-title">—</span>
+      <div class="spacer"></div>
+      <label class="muted" for="episode-select">Épisode</label>
+      <select id="episode-select"></select>
+      <button class="btn" id="change-file-btn">Changer de fichier</button>
+    </div>
+
+    <div class="controls">
+      <button class="btn" id="restart-btn">⟲ Début</button>
+      <button class="btn" id="prev-btn">‹ Précédent</button>
+      <button class="btn" id="play-btn">Lecture</button>
+      <button class="btn" id="next-btn">Suivant ›</button>
+      <span class="muted" id="frame-counter">0 / 0</span>
+      <div class="spacer"></div>
+      <label class="muted" for="speed">Vitesse</label>
+      <input type="range" id="speed" min="80" max="1200" step="20" value="400" aria-label="Vitesse de lecture">
+    </div>
+
+    <div id="result-banner" class="panel result-banner" style="display:none"></div>
+
+    <div class="stage">
+      <div class="board panel" id="board"></div>
+      <div class="chatlog panel" id="chatlog">
+        <div class="heading">Messages</div>
+        <div class="empty">Aucun message pour l'instant.</div>
+      </div>
+    </div>
+
+    <div class="stats" id="stats"></div>
+  </section>
+
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  const DIRS = { haut: [0, -1], bas: [0, 1], gauche: [-1, 0], droite: [1, 0] };
+
+  const loader = document.getElementById("loader");
+  const viewer = document.getElementById("viewer");
+  const fileInput = document.getElementById("file-input");
+  const pickBtn = document.getElementById("pick-btn");
+  const changeFileBtn = document.getElementById("change-file-btn");
+  const episodeSelect = document.getElementById("episode-select");
+  const sessionTitle = document.getElementById("session-title");
+  const boardEl = document.getElementById("board");
+  const chatlogEl = document.getElementById("chatlog");
+  const statsEl = document.getElementById("stats");
+  const resultBannerEl = document.getElementById("result-banner");
+  const frameCounterEl = document.getElementById("frame-counter");
+  const playBtn = document.getElementById("play-btn");
+  const prevBtn = document.getElementById("prev-btn");
+  const nextBtn = document.getElementById("next-btn");
+  const restartBtn = document.getElementById("restart-btn");
+  const speedInput = document.getElementById("speed");
+
+  let records = [];
+  let sourceName = "";
+  let currentRecord = null;
+  let frames = [];
+  let frameIndex = 0;
+  let playing = false;
+  let timer = null;
+  const tokens = {};
+
+  // ---------- loading ----------
+
+  pickBtn.addEventListener("click", () => fileInput.click());
+  changeFileBtn.addEventListener("click", () => {
+    stopPlayback();
+    viewer.hidden = true;
+    loader.hidden = false;
+  });
+  fileInput.addEventListener("change", (e) => { if (e.target.files[0]) loadFile(e.target.files[0]); });
+
+  ["dragenter", "dragover"].forEach((evt) =>
+    loader.addEventListener(evt, (e) => { e.preventDefault(); loader.classList.add("dragover"); })
+  );
+  ["dragleave", "drop"].forEach((evt) =>
+    loader.addEventListener(evt, (e) => { e.preventDefault(); loader.classList.remove("dragover"); })
+  );
+  loader.addEventListener("drop", (e) => { const f = e.dataTransfer.files[0]; if (f) loadFile(f); });
+
+  function loadFile(file) {
+    sourceName = file.name;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try { records = parseJSONL(reader.result); }
+      catch (err) { alert("Fichier illisible : " + err.message); return; }
+      if (!records.length) { alert("Aucun épisode trouvé dans ce fichier."); return; }
+      loader.hidden = true;
+      viewer.hidden = false;
+      sessionTitle.innerHTML =
+        sourceName + " — <span class=\"tag-a\">" + records[0].model_a +
+        "</span> vs <span class=\"tag-b\">" + records[0].model_b + "</span>";
+      populateEpisodeSelect();
+      loadEpisode(0);
+    };
+    reader.readAsText(file);
+  }
+
+  function parseJSONL(text) {
+    return text.split("\n").map((l) => l.trim()).filter((l) => l.length > 0).map((l) => JSON.parse(l));
+  }
+
+  function populateEpisodeSelect() {
+    episodeSelect.innerHTML = "";
+    records.forEach((r, i) => {
+      const opt = document.createElement("option");
+      opt.value = i;
+      opt.textContent = "Épisode " + r.episode + " (vainqueur " + (r.winner || "nul") + ")";
+      episodeSelect.appendChild(opt);
+    });
+  }
+  episodeSelect.addEventListener("change", () => loadEpisode(Number(episodeSelect.value)));
+
+  // ---------- frame building ----------
+
+  function buildFrames(record) {
+    const order = record.first_player === "B" ? ["B", "A"] : ["A", "B"];
+    const trail = { A: record.trail_a || [], B: record.trail_b || [] };
+    const msgs = { A: record.messages_a || [], B: record.messages_b || [] };
+    const pos = { A: record.start_a.slice(), B: record.start_b.slice() };
+    const idx = { A: 0, B: 0 };
+    const out = [{ agent: null, direction: null, position: { A: pos.A.slice(), B: pos.B.slice() }, message: "" }];
+    let guard = 0;
+    while ((idx.A < trail.A.length || idx.B < trail.B.length) && guard < 5000) {
+      guard++;
+      for (const agent of order) {
+        if (idx[agent] < trail[agent].length) {
+          const dir = trail[agent][idx[agent]];
+          const delta = DIRS[dir] || [0, 0];
+          pos[agent] = [pos[agent][0] + delta[0], pos[agent][1] + delta[1]];
+          const message = (msgs[agent] && msgs[agent][idx[agent]]) || "";
+          idx[agent]++;
+          out.push({ agent, direction: dir, position: { A: pos.A.slice(), B: pos.B.slice() }, message });
+        }
+      }
+    }
+    return out;
+  }
+
+  function loadEpisode(i) {
+    stopPlayback();
+    currentRecord = records[i];
+    episodeSelect.value = i;
+    frames = buildFrames(currentRecord);
+    frameIndex = 0;
+    resultBannerEl.style.display = "none";
+    buildBoard();
+    renderStats(currentRecord);
+    renderFrame();
+  }
+
+  // ---------- board ----------
+
+  function cellSize(size) { return Math.max(34, Math.min(72, Math.floor(560 / size))); }
+  const LABEL = 20;
+
+  function buildBoard() {
+    const size = currentRecord.grid_size;
+    const cs = cellSize(size);
+
+    let colLabels = '<span class="corner" style="width:' + LABEL + 'px"></span>';
+    for (let x = 0; x < size; x++) colLabels += '<span style="width:' + cs + 'px">' + x + "</span>";
+    let rowLabels = "";
+    for (let y = 0; y < size; y++) rowLabels += '<span style="height:' + cs + 'px">' + y + "</span>";
+
+    boardEl.innerHTML =
+      '<div class="col-labels">' + colLabels + "</div>" +
+      '<div class="body-row">' +
+      '<div class="row-labels" style="width:' + LABEL + 'px">' + rowLabels + "</div>" +
+      '<div class="cells" id="cells" style="width:' + cs * size + "px;height:" + cs * size + 'px"></div>' +
+      "</div>";
+
+    const cellsEl = document.getElementById("cells");
+    let bg = "";
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        bg += '<div class="bg-cell" style="left:' + x * cs + "px;top:" + y * cs + "px;width:" + cs + "px;height:" + cs + 'px"></div>';
+      }
+    }
+    const bonus = currentRecord.bonus_position;
+    bg += '<div class="bonus-marker" id="bonus-marker" style="left:' + bonus[0] * cs + "px;top:" + bonus[1] * cs +
+      "px;width:" + cs + "px;height:" + cs + "px;font-size:" + Math.floor(cs * 0.5) + 'px">*</div>';
+    bg += tokenHtml("A", cs);
+    bg += tokenHtml("B", cs);
+    cellsEl.innerHTML = bg;
+
+    tokens.A = document.getElementById("token-a");
+    tokens.B = document.getElementById("token-b");
+  }
+
+  function tokenHtml(agent, cs) {
+    return '<div class="token ' + agent.toLowerCase() + '" id="token-' + agent.toLowerCase() +
+      '" style="width:' + cs + "px;height:" + cs + "px;font-size:" + Math.floor(cs * 0.42) + 'px">' + agent + "</div>";
+  }
+
+  // ---------- rendering ----------
+
+  function renderFrame() {
+    const record = currentRecord;
+    const frame = frames[frameIndex];
+    const cs = cellSize(record.grid_size);
+    const isLast = frameIndex === frames.length - 1;
+    const won = isLast ? record.winner : null;
+
+    tokens.A.style.transform = "translate(" + frame.position.A[0] * cs + "px," + frame.position.A[1] * cs + "px)";
+    tokens.B.style.transform = "translate(" + frame.position.B[0] * cs + "px," + frame.position.B[1] * cs + "px)";
+    tokens.A.classList.toggle("mover", frame.agent === "A");
+    tokens.B.classList.toggle("mover", frame.agent === "B");
+    tokens.A.classList.toggle("won", won === "A");
+    tokens.B.classList.toggle("won", won === "B");
+    const bonusMarker = document.getElementById("bonus-marker");
+    if (bonusMarker) bonusMarker.classList.toggle("reached", !!won);
+
+    frameCounterEl.textContent = frameIndex + " / " + (frames.length - 1);
+
+    if (isLast) {
+      resultBannerEl.style.display = "flex";
+      resultBannerEl.innerHTML = record.winner
+        ? "Épisode " + record.episode + " — victoire de <span class=\"win-" + record.winner.toLowerCase() +
+          '">' + record.winner + "</span> en " + record["steps_" + record.winner.toLowerCase()] + " coups."
+        : "Épisode " + record.episode + " — match nul (plafond de coups atteint).";
+    } else {
+      resultBannerEl.style.display = "none";
+    }
+
+    renderChatUpTo(frameIndex);
+  }
+
+  function renderChatUpTo(index) {
+    const lines = [];
+    for (let i = 1; i <= index; i++) { const f = frames[i]; if (f.message) lines.push(f); }
+    if (!lines.length) {
+      chatlogEl.innerHTML = '<div class="heading">Messages</div><div class="empty">Aucun message pour l\'instant.</div>';
+      return;
+    }
+    chatlogEl.innerHTML =
+      '<div class="heading">Messages</div>' +
+      lines
+        .map((f) => {
+          const div = document.createElement("div");
+          div.textContent = f.message;
+          return '<div class="chat-line ' + f.agent.toLowerCase() + '"><span class="tag">' + f.agent +
+            '</span><span class="msg">' + div.innerHTML + "</span></div>";
+        })
+        .join("");
+    chatlogEl.scrollTop = chatlogEl.scrollHeight;
+  }
+
+  function renderStats(record) {
+    const w = record.winner || "nul (plafond de coups)";
+    statsEl.innerHTML = [
+      stat("Vainqueur", w),
+      statSplit("Coups A / B", record.steps_a, record.steps_b),
+      statSplit("Optimal A / B", record.manhattan_optimal_a, record.manhattan_optimal_b),
+      statSplit("Invalides A / B", record.invalid_responses_a, record.invalid_responses_b),
+      stat("Grille", record.grid_size + "x" + record.grid_size),
+      stat("Visibilité", record.visibility_radius),
+      stat("Mémoire", record.memory_strategy + " (depth " + record.memory_depth + ")"),
+    ].join("");
+  }
+
+  function statSplit(label, a, b) {
+    return (
+      '<div class="panel stat"><span class="label">' + label +
+      '</span><span class="value"><span class="a">' + a +
+      '</span> / <span class="b">' + b + "</span></span></div>"
+    );
+  }
+  function stat(label, value) {
+    return '<div class="panel stat"><span class="label">' + label + '</span><span class="value">' + value + "</span></div>";
+  }
+
+  // ---------- playback ----------
+
+  function stopPlayback() {
+    playing = false;
+    playBtn.textContent = "Lecture";
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+  function startPlayback() {
+    playing = true;
+    playBtn.textContent = "Pause";
+    timer = setInterval(() => {
+      if (frameIndex >= frames.length - 1) { stopPlayback(); return; }
+      frameIndex++;
+      renderFrame();
+    }, Number(speedInput.value));
+  }
+
+  playBtn.addEventListener("click", () => (playing ? stopPlayback() : startPlayback()));
+  prevBtn.addEventListener("click", () => { stopPlayback(); frameIndex = Math.max(0, frameIndex - 1); renderFrame(); });
+  nextBtn.addEventListener("click", () => { stopPlayback(); frameIndex = Math.min(frames.length - 1, frameIndex + 1); renderFrame(); });
+  restartBtn.addEventListener("click", () => { stopPlayback(); frameIndex = 0; renderFrame(); });
+  speedInput.addEventListener("change", () => { if (playing) { stopPlayback(); startPlayback(); } });
+})();
+</script>
+
+</body>
+</html>

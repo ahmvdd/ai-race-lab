@@ -10,10 +10,12 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+import webbrowser
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from ai_race.live_server import LiveServer  # noqa: E402
 from ai_race.logging_utils import SessionLogger  # noqa: E402
 from ai_race.memory import STRATEGIES  # noqa: E402
 from ai_race.ollama_client import DEFAULT_BASE_URL, OllamaError, check_ollama  # noqa: E402
@@ -41,7 +43,81 @@ def build_parser() -> argparse.ArgumentParser:
                    help="affiche la grille en direct dans le terminal à chaque coup joué")
     p.add_argument("--watch-delay", type=float, default=0.2,
                    help="pause (s) entre deux coups affichés en mode --watch")
+    p.add_argument("--web", action="store_true",
+                   help="ouvre une page web locale qui affiche la partie en temps réel")
+    p.add_argument("--web-port", type=int, default=8765)
+    p.add_argument("--web-delay", type=float, default=0.6,
+                   help="pause (s) entre deux coups affichés en mode --web")
     return p
+
+
+def _print_watch_frame(cfg, world, agent, episode_index, message, delay) -> None:
+    print("\033c", end="")
+    print(f"Épisode {episode_index + 1}/{cfg.episodes} — "
+          f"{cfg.model_a} (A) vs {cfg.model_b} (B) — grille {cfg.grid_size}x{cfg.grid_size}\n")
+    print(world.render_full())
+    print(f"\nA : {world.steps('A')} coup(s) — B : {world.steps('B')} coup(s) "
+          f"— dernier à jouer : {agent}")
+    if message:
+        print(f'{agent} dit : "{message}"')
+    time.sleep(delay)
+
+
+def _make_on_episode(logger, live):
+    def on_episode(record):
+        logger.log_episode(record)
+        w = record["winner"] or "nul"
+        print(f"  Épisode {record['episode']}: vainqueur={w} "
+              f"(A: {record['steps_a']} coups / opt {record['manhattan_optimal_a']}, "
+              f"B: {record['steps_b']} coups / opt {record['manhattan_optimal_b']}, "
+              f"invalides A/B: {record['invalid_responses_a']}/{record['invalid_responses_b']})")
+        if live:
+            live.broadcast({
+                "type": "episode_end",
+                "episode": record["episode"],
+                "winner": record["winner"],
+                "steps_a": record["steps_a"],
+                "steps_b": record["steps_b"],
+                "invalid_responses_a": record["invalid_responses_a"],
+                "invalid_responses_b": record["invalid_responses_b"],
+            })
+    return on_episode
+
+
+def _make_on_episode_start(cfg, live):
+    def on_episode_start(world, episode_index):
+        live.broadcast({
+            "type": "episode_start",
+            "episode": episode_index + 1,
+            "episodes_total": cfg.episodes,
+            "grid_size": world.size,
+            "visibility_radius": cfg.visibility_radius,
+            "model_a": cfg.model_a,
+            "model_b": cfg.model_b,
+            "bonus_position": list(world.bonus),
+            "start_a": list(world.start_positions["A"]),
+            "start_b": list(world.start_positions["B"]),
+        })
+    return on_episode_start
+
+
+def _make_on_move(cfg, args, live):
+    def on_move(world, agent, episode_index, message):
+        if args.watch:
+            _print_watch_frame(cfg, world, agent, episode_index, message, args.watch_delay)
+        if live:
+            live.broadcast({
+                "type": "move",
+                "episode": episode_index + 1,
+                "agent": agent,
+                "direction": world.trails[agent][-1],
+                "position": {"A": list(world.positions["A"]), "B": list(world.positions["B"])},
+                "message": message,
+                "steps_a": world.steps("A"),
+                "steps_b": world.steps("B"),
+            })
+            time.sleep(args.web_delay)
+    return on_move
 
 
 def main() -> None:
@@ -70,28 +146,20 @@ def main() -> None:
           f"grille {cfg.grid_size}x{cfg.grid_size}, visibilité {cfg.visibility_radius}, "
           f"{cfg.episodes} épisodes\nLogs : {logger.jsonl_path}\n")
 
-    def on_episode(record):
-        logger.log_episode(record)
-        w = record["winner"] or "nul"
-        print(f"  Épisode {record['episode']}: vainqueur={w} "
-              f"(A: {record['steps_a']} coups / opt {record['manhattan_optimal_a']}, "
-              f"B: {record['steps_b']} coups / opt {record['manhattan_optimal_b']}, "
-              f"invalides A/B: {record['invalid_responses_a']}/{record['invalid_responses_b']})")
+    live = None
+    if args.web:
+        live = LiveServer(port=args.web_port)
+        live.start()
+        print(f"Vue en direct : {live.url}")
+        webbrowser.open(live.url)
+        time.sleep(1.5)  # laisse le temps à l'onglet de charger et se connecter au flux
 
-    on_move = None
-    if args.watch:
-        def on_move(world, agent, episode_index, message):
-            print("\033c", end="")
-            print(f"Épisode {episode_index + 1}/{cfg.episodes} — "
-                  f"{cfg.model_a} (A) vs {cfg.model_b} (B) — grille {cfg.grid_size}x{cfg.grid_size}\n")
-            print(world.render_full())
-            print(f"\nA : {world.steps('A')} coup(s) — B : {world.steps('B')} coup(s) "
-                  f"— dernier à jouer : {agent}")
-            if message:
-                print(f'{agent} dit : "{message}"')
-            time.sleep(args.watch_delay)
-
-    run_session(cfg, on_episode=on_episode, on_move=on_move)
+    run_session(
+        cfg,
+        on_episode=_make_on_episode(logger, live),
+        on_move=_make_on_move(cfg, args, live) if (args.watch or live) else None,
+        on_episode_start=_make_on_episode_start(cfg, live) if live else None,
+    )
     csv_path = logger.export_csv()
     print(f"\nTerminé. JSONL : {logger.jsonl_path}\nCSV : {csv_path}")
     print(f"Analyse : python analysis/plot_results.py {logger.jsonl_path}")

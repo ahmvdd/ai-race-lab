@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Race Lab — Live</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="brand"><span class="mark"></span><span class="name">AI Race Lab</span></div>
+  <span class="subtitle">Vue en direct</span>
+  <div class="spacer"></div>
+  <span class="pill pending" id="status"><span class="dot"></span><span id="status-text">connexion…</span></span>
+</header>
+
+<main class="wrap">
+
+  <div class="meta-row" id="meta-row">
+    <span>En attente d'une session…</span>
+  </div>
+
+  <div id="result-banner" class="panel result-banner" style="display:none"></div>
+
+  <div id="empty-state" class="panel placeholder">
+    Rien à afficher pour l'instant. Lance une session avec<br>
+    <code>python scripts/run_experiment.py --web</code><br>
+    cette page se met à jour automatiquement.
+  </div>
+
+  <div class="stage" id="stage" style="display:none">
+    <div class="board panel" id="board"></div>
+    <div class="chatlog panel" id="chatlog">
+      <div class="heading">Messages</div>
+      <div class="empty">Aucun message pour l'instant.</div>
+    </div>
+  </div>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="history panel" id="history" style="display:none"></div>
+
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  const statusEl = document.getElementById("status");
+  const statusTextEl = document.getElementById("status-text");
+  const metaRowEl = document.getElementById("meta-row");
+  const resultBannerEl = document.getElementById("result-banner");
+  const emptyStateEl = document.getElementById("empty-state");
+  const stageEl = document.getElementById("stage");
+  const boardEl = document.getElementById("board");
+  const chatlogEl = document.getElementById("chatlog");
+  const statsEl = document.getElementById("stats");
+  const historyEl = document.getElementById("history");
+
+  let episode = null;
+  let position = null;
+  let mover = null;
+  let won = null;
+  const results = [];
+  const tokens = {};
+
+  function setStatus(state, text) {
+    statusEl.className = "pill " + state;
+    statusTextEl.textContent = text;
+  }
+
+  function connect() {
+    const source = new EventSource("/events");
+    source.onopen = () => setStatus("ok", "connecté");
+    source.onerror = () => setStatus("pending", "reconnexion…");
+    source.onmessage = (e) => {
+      let event;
+      try { event = JSON.parse(e.data); } catch (err) { return; }
+      handleEvent(event);
+    };
+  }
+
+  function handleEvent(event) {
+    if (event.type === "episode_start") onEpisodeStart(event);
+    else if (event.type === "move") onMove(event);
+    else if (event.type === "episode_end") onEpisodeEnd(event);
+  }
+
+  function onEpisodeStart(event) {
+    episode = event;
+    position = { A: event.start_a.slice(), B: event.start_b.slice() };
+    mover = null;
+    won = null;
+
+    emptyStateEl.style.display = "none";
+    resultBannerEl.style.display = "none";
+    stageEl.style.display = "flex";
+
+    metaRowEl.innerHTML =
+      '<span><span class="tag-a">' + event.model_a + "</span> vs " +
+      '<span class="tag-b">' + event.model_b + "</span></span>" +
+      "<span>Épisode <b>" + event.episode + "</b> / " + event.episodes_total + "</span>" +
+      "<span>Grille <b>" + event.grid_size + "x" + event.grid_size + "</b></span>" +
+      "<span>Visibilité <b>" + event.visibility_radius + "</b></span>";
+
+    chatlogEl.innerHTML = '<div class="heading">Messages</div><div class="empty">Aucun message pour l\'instant.</div>';
+    statsEl.innerHTML = "";
+    buildBoard();
+  }
+
+  function onMove(event) {
+    if (!episode) return;
+    position = event.position;
+    mover = event.agent;
+    if (event.message) appendChat(event.agent, event.message);
+    updateTokens();
+    renderLiveStats(event);
+  }
+
+  function onEpisodeEnd(event) {
+    won = event.winner;
+    updateTokens();
+    showResultBanner(event);
+    results.unshift(event);
+    renderHistory();
+  }
+
+  function showResultBanner(event) {
+    if (!event.winner) {
+      resultBannerEl.innerHTML = "Épisode " + event.episode + " — match nul (plafond de coups atteint).";
+    } else {
+      resultBannerEl.innerHTML =
+        "Épisode " + event.episode + " — victoire de <span class=\"win-" + event.winner.toLowerCase() +
+        '">' + event.winner + "</span> en " + event["steps_" + event.winner.toLowerCase()] + " coups.";
+    }
+    resultBannerEl.style.display = "flex";
+  }
+
+  // ---------- board ----------
+
+  function cellSize(size) { return Math.max(34, Math.min(72, Math.floor(560 / size))); }
+  const LABEL = 20;
+
+  function buildBoard() {
+    const size = episode.grid_size;
+    const cs = cellSize(size);
+
+    let colLabels = '<span class="corner" style="width:' + LABEL + 'px"></span>';
+    for (let x = 0; x < size; x++) colLabels += '<span style="width:' + cs + 'px">' + x + "</span>";
+
+    let rowLabels = "";
+    for (let y = 0; y < size; y++) rowLabels += '<span style="height:' + cs + 'px">' + y + "</span>";
+
+    boardEl.innerHTML =
+      '<div class="col-labels">' + colLabels + "</div>" +
+      '<div class="body-row">' +
+      '<div class="row-labels" style="width:' + LABEL + 'px">' + rowLabels + "</div>" +
+      '<div class="cells" id="cells" style="width:' + cs * size + "px;height:" + cs * size + 'px"></div>' +
+      "</div>";
+
+    const cellsEl = document.getElementById("cells");
+    let bg = "";
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        bg += '<div class="bg-cell" style="left:' + x * cs + "px;top:" + y * cs + "px;width:" + cs + "px;height:" + cs + 'px"></div>';
+      }
+    }
+    const bonus = episode.bonus_position;
+    bg += '<div class="bonus-marker" id="bonus-marker" style="left:' + bonus[0] * cs + "px;top:" + bonus[1] * cs +
+      "px;width:" + cs + "px;height:" + cs + "px;font-size:" + Math.floor(cs * 0.5) + 'px">*</div>';
+    bg += tokenHtml("A", cs);
+    bg += tokenHtml("B", cs);
+    cellsEl.innerHTML = bg;
+
+    tokens.A = document.getElementById("token-a");
+    tokens.B = document.getElementById("token-b");
+    positionToken("A", cs);
+    positionToken("B", cs);
+  }
+
+  function tokenHtml(agent, cs) {
+    return '<div class="token ' + agent.toLowerCase() + '" id="token-' + agent.toLowerCase() +
+      '" style="width:' + cs + "px;height:" + cs + "px;font-size:" + Math.floor(cs * 0.42) + 'px">' + agent + "</div>";
+  }
+
+  function positionToken(agent, cs) {
+    const el = tokens[agent];
+    if (!el) return;
+    const [x, y] = position[agent];
+    el.style.transform = "translate(" + x * cs + "px," + y * cs + "px)";
+  }
+
+  function updateTokens() {
+    const cs = cellSize(episode.grid_size);
+    positionToken("A", cs);
+    positionToken("B", cs);
+    tokens.A.classList.toggle("mover", mover === "A");
+    tokens.B.classList.toggle("mover", mover === "B");
+    tokens.A.classList.toggle("won", won === "A");
+    tokens.B.classList.toggle("won", won === "B");
+    const bonusMarker = document.getElementById("bonus-marker");
+    if (bonusMarker) bonusMarker.classList.toggle("reached", !!won);
+  }
+
+  // ---------- chat / stats / history ----------
+
+  function appendChat(agent, message) {
+    if (chatlogEl.querySelector(".empty")) {
+      chatlogEl.innerHTML = '<div class="heading">Messages</div>';
+    }
+    const line = document.createElement("div");
+    line.className = "chat-line " + agent.toLowerCase();
+    line.innerHTML = '<span class="tag">' + agent + "</span><span class=\"msg\"></span>";
+    line.querySelector(".msg").textContent = message;
+    chatlogEl.appendChild(line);
+    chatlogEl.scrollTop = chatlogEl.scrollHeight;
+  }
+
+  function renderLiveStats(event) {
+    statsEl.innerHTML =
+      stat("Coups A / B", event.steps_a, event.steps_b) +
+      '<div class="panel stat"><span class="label">Dernier coup</span><span class="value ' +
+      event.agent.toLowerCase() + '">' + event.agent + " → " + event.direction + "</span></div>";
+  }
+
+  function stat(label, a, b) {
+    return (
+      '<div class="panel stat"><span class="label">' + label +
+      '</span><span class="value"><span class="a">' + a +
+      '</span> / <span class="b">' + b + "</span></span></div>"
+    );
+  }
+
+  function renderHistory() {
+    if (!results.length) return;
+    historyEl.style.display = "block";
+    historyEl.innerHTML =
+      '<div class="heading">Historique de la session</div>' +
+      results
+        .map((r) => {
+          const w = r.winner ? '<span class="win-' + r.winner.toLowerCase() + '">' + r.winner + "</span>" : "nul";
+          return (
+            '<div class="row"><span>Épisode ' + r.episode + "</span><span>vainqueur " + w +
+            "</span><span>coups A/B : " + r.steps_a + "/" + r.steps_b +
+            "</span><span>invalides A/B : " + r.invalid_responses_a + "/" + r.invalid_responses_b + "</span></div>"
+          );
+        })
+        .join("");
+  }
+
+  connect();
+})();
+</script>
+
+</body>
+</html>
